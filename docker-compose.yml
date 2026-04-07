@@ -1,0 +1,85 @@
+version: '3'  # Docker Compose file format version
+
+services:
+  zookeeper:  # Service name (used for networking)
+    image: confluentinc/cp-zookeeper:7.4.0  # ZooKeeper image from Confluent
+    hostname: zookeeper  # Internal hostname inside Docker network
+    container_name: zookeeper  # Explicit container name
+
+    ports:
+      - "2181:2181"  # Map host port 2181 → container port 2181
+
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181  # Port ZooKeeper listens on
+      ZOOKEEPER_TICK_TIME: 2000    # Heartbeat interval (ms) for coordination
+
+    healthcheck:
+      # Send "ruok" command → expect "imok" if healthy
+      test: ['CMD', 'bash', '-c', "echo 'ruok' | nc localhost 2181"]
+      interval: 10s   # Run health check every 10 seconds
+      timeout: 5s     # Fail if no response in 5 seconds
+      retries: 5      # Mark unhealthy after 5 failures
+
+  broker:
+    image: confluentinc/cp-server:7.4.0  # Kafka broker (Confluent distribution)
+    hostname: broker                    # Internal hostname (used inside Docker network)
+    container_name: broker              # Container name (for docker ps, logs, etc.)
+
+    depends_on:
+      zookeeper:
+        condition: service_healthy      # Wait until ZooKeeper is healthy before starting
+
+    ports:
+      - "9092:9092"   # External access (host → Kafka)
+      - "9101:9101"   # JMX monitoring port
+
+    environment:
+      KAFKA_BROKER_ID: 1  # Unique ID of this broker (important in multi-broker setups)
+
+      # Connect Kafka to ZooKeeper
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+
+      # Define listener types and protocols
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+
+      # VERY IMPORTANT (networking)
+      # broker:29092 → internal Docker communication
+      # localhost:9092 → access from your host machine
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
+
+      # Metrics reporting (Confluent specific)
+      KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
+
+      # Replication settings (set to 1 because single broker)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+      # Faster consumer group startup
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      # JMX monitoring config
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+
+      # Schema Registry (another service in your compose)
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+      # Metrics reporter connects back to Kafka itself
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: broker:29092
+      CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      CONFLUENT_METRICS_ENABLE: 'false'   # Disable metrics (optional)
+      CONFLUENT_SUPPORT_CUSTOMER_ID: 'anonymous'
+
+    networks:
+      - confluent   # Shared network with ZooKeeper, Schema Registry, etc.
+
+    healthcheck:
+      # Check if Kafka port is open
+      test: [ "CMD", "bash", "-c", "nc -z localhost 9092" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
